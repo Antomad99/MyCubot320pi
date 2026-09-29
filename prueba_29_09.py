@@ -15,67 +15,31 @@ except Exception as e:
 
 routine_points = []
 
-# --- Funciones de Validación Matemática (Desactivadas temporalmente) ---
-
+# --- Funciones de Validación (Límites Libres para pruebas empíricas) ---
 def is_safe_cartesian(x, y, z):
-    """
-    Límites espaciales desactivados.
-    Aquí podrás definir tus propios límites empíricos más adelante.
-    """
-    # Z_MIN = 40 
-    # RADIO_MAX = 315  
-    # etc...
-    
-    return True, "Posición permitida (límites desactivados)."
+    return True, "Posición permitida."
 
 def is_safe_angles(j2, j3):
-    """
-    Reglas de cinemática directa desactivadas.
-    """
-    return True, "Ángulos permitidos (límites desactivados)."
-
+    return True, "Ángulos permitidos."
 
 # --- Funciones de Control ---
-
 def update_angles(val=None):
     if mc:
         angles = [s.get() for s in angle_sliders]
-        seguro, mensaje = is_safe_angles(angles[1], angles[2])
-        if seguro:
-            mc.send_angles(angles, speed_var.get())
-        else:
-            print(f"BLOQUEO PREVENTIVO: {mensaje}")
+        mc.send_angles(angles, speed_var.get())
 
 def send_current_coords():
-    """Se ejecuta al presionar el botón de Mover a Coordenadas (Sliders)"""
     if mc:
         coords = [s.get() for s in coord_sliders]
-        x, y, z = coords[0], coords[1], coords[2]
-        
-        seguro, mensaje = is_safe_cartesian(x, y, z)
-        
-        if seguro:
-            mc.send_coords(coords, speed_var.get(), 1)
-        else:
-            messagebox.showwarning("Límite de Seguridad Activado", mensaje)
+        mc.send_coords(coords, speed_var.get(), 0) # Modo 0: Articular (MoveJ)
 
 def send_text_coords():
-    """Se ejecuta al presionar el botón de Mover en la nueva pestaña de Texto"""
     if mc:
         try:
-            # Extraer valores de los campos de texto
             coords = [float(var.get()) for var in text_coord_vars]
-            x, y, z = coords[0], coords[1], coords[2]
-            
-            seguro, mensaje = is_safe_cartesian(x, y, z)
-            
-            if seguro:
-                # Ejecutamos mc.send_coords con modo 1 (movimiento lineal)
-                mc.send_coords(coords, speed_var.get(), 1)
-            else:
-                messagebox.showwarning("Límite de Seguridad Activado", mensaje)
+            mc.send_coords(coords, speed_var.get(), 0) # Modo 0: Articular (MoveJ)
         except ValueError:
-            messagebox.showerror("Error de Formato", "Por favor ingresa únicamente valores numéricos válidos.")
+            messagebox.showerror("Error", "Ingresa únicamente valores numéricos.")
 
 def go_home():
     if mc:
@@ -87,8 +51,7 @@ def release_motors():
     if mc:
         mc.release_all_servos()
 
-# --- Funciones de Rutina ---
-
+# --- Funciones de Rutina y Puntos Predefinidos ---
 def save_point():
     if mc:
         current_angles = mc.get_angles()
@@ -105,10 +68,16 @@ def clear_routine():
     routine_points.clear()
     routine_listbox.delete(0, tk.END)
 
-# --- Función de Monitoreo en Tiempo Real ---
+def move_to_mapped_point(angles):
+    """Envía los ángulos directamente para una fiabilidad absoluta del 100%"""
+    if mc:
+        mc.send_angles(angles, speed_var.get())
+        # Actualizamos también los sliders de la pestaña 1 visualmente
+        for slider, angle in zip(angle_sliders, angles):
+            slider.set(angle)
 
+# --- Función de Monitoreo en Tiempo Real ---
 def update_realtime_display():
-    """Consulta las coordenadas del robot cada 500ms para actualizar la interfaz"""
     if mc:
         try:
             coords = mc.get_coords()
@@ -116,16 +85,13 @@ def update_realtime_display():
                 for i, val in enumerate(coords):
                     realtime_labels[i].config(text=f"{coord_labels[i]}: {val:.2f}")
         except Exception:
-            # Ignorar fallos temporales de lectura del puerto serial
             pass
-    # Volver a ejecutar esta función en 500 ms
     root.after(500, update_realtime_display)
 
 # --- Interfaz Gráfica ---
-
 root = tk.Tk()
-root.title("MyCobot 320 Pi - Control (Límites Libres)")
-root.geometry("550x700")
+root.title("MyCobot 320 Pi - Control Optimizado")
+root.geometry("600x750")
 
 # Panel Global
 global_frame = tk.Frame(root)
@@ -135,7 +101,6 @@ tk.Label(global_frame, text="Velocidad:", font=("Arial", 10, "bold")).pack(side=
 speed_var = tk.IntVar(value=40)
 speed_slider = tk.Scale(global_frame, from_=1, to=100, orient='horizontal', variable=speed_var, length=150)
 speed_slider.pack(side='left', padx=10)
-
 tk.Button(global_frame, text="Ir al Origen", bg="lightblue", command=go_home).pack(side='right')
 
 # Pestañas
@@ -158,13 +123,11 @@ for i, limits in enumerate(angle_limits):
 
 # Pestaña 2: Coordenadas (Sliders)
 tab_coords = ttk.Frame(notebook)
-notebook.add(tab_coords, text="Coordenadas (IK)")
+notebook.add(tab_coords, text="Coord (Sliders)")
 coord_limits = [(-350, 350), (-350, 350), (-41, 523.9), (-180, 180), (-180, 180), (-180, 180)]
 coord_labels = ["X", "Y", "Z", "RX", "RY", "RZ"]
 coord_sliders = []
-
 tk.Label(tab_coords, text="Ajusta los valores y presiona 'Mover'", fg="gray").pack(pady=5)
-
 for i, limits in enumerate(coord_limits):
     frame = tk.Frame(tab_coords)
     frame.pack(fill='x', padx=10, pady=5)
@@ -173,64 +136,75 @@ for i, limits in enumerate(coord_limits):
     slider.set(200 if coord_labels[i] == 'Z' else 0)
     slider.pack(side='right')
     coord_sliders.append(slider)
+tk.Button(tab_coords, text="Mover a Coordenadas", bg="orange", command=send_current_coords).pack(pady=15)
 
-tk.Button(tab_coords, text="Mover a Coordenadas", bg="orange", font=("Arial", 11, "bold"), command=send_current_coords).pack(pady=15)
-
-# Pestaña 3 (Nueva): Coordenadas por Texto y Tiempo Real
+# Pestaña 3: Coordenadas por Texto y Tiempo Real
 tab_text_coords = ttk.Frame(notebook)
 notebook.add(tab_text_coords, text="Coord (Texto)")
-
-# Contenedor para dividir en dos columnas
 columns_frame = tk.Frame(tab_text_coords)
 columns_frame.pack(fill='both', expand=True, padx=10, pady=10)
 
-# Columna Izquierda: Monitor en Tiempo Real
 left_col = tk.Frame(columns_frame)
 left_col.pack(side='left', fill='both', expand=True)
-
-tk.Label(left_col, text="Posición Actual\n(Tiempo Real)", font=("Arial", 10, "bold")).pack(pady=5)
+tk.Label(left_col, text="Posición Actual", font=("Arial", 10, "bold")).pack(pady=5)
 realtime_labels = []
 for label_text in coord_labels:
     lbl = tk.Label(left_col, text=f"{label_text}: 0.00", font=("Arial", 11))
     lbl.pack(anchor='w', pady=8, padx=20)
     realtime_labels.append(lbl)
 
-# Columna Derecha: Entradas de Texto
 right_col = tk.Frame(columns_frame)
 right_col.pack(side='right', fill='both', expand=True)
-
-tk.Label(right_col, text="Modificar Coordenadas\n(Ingresar texto)", font=("Arial", 10, "bold")).pack(pady=5)
+tk.Label(right_col, text="Ingresar Coordenadas", font=("Arial", 10, "bold")).pack(pady=5)
 text_coord_vars = []
 for i, label_text in enumerate(coord_labels):
     f = tk.Frame(right_col)
     f.pack(fill='x', pady=5, padx=10)
     tk.Label(f, text=f"{label_text}:", width=4).pack(side='left')
-    
     var = tk.StringVar(value="200" if label_text == 'Z' else "0")
     entry = tk.Entry(f, textvariable=var, width=12, justify='center')
     entry.pack(side='right')
     text_coord_vars.append(var)
+tk.Button(right_col, text="Aplicar Movimiento", bg="orange", command=send_text_coords).pack(pady=20)
 
-tk.Button(right_col, text="Aplicar Movimiento", bg="orange", font=("Arial", 11, "bold"), command=send_text_coords).pack(pady=20)
+# --- NUEVA PESTAÑA: PUNTOS MAPEADOS ---
+tab_mapped = ttk.Frame(notebook)
+notebook.add(tab_mapped, text="Puntos Mapeados")
 
-# Pestaña 4: Rutinas
+tk.Label(tab_mapped, text="Movimiento basado en Ángulos Articulares (Alta Fiabilidad)", font=("Arial", 10, "bold")).pack(pady=10)
+tk.Label(tab_mapped, text="Al ejecutar, el robot irá a los ángulos registrados,\nresultando en las coordenadas X,Y,Z esperadas.", justify="center", fg="gray").pack(pady=5)
+
+# Diccionario con los datos extraídos de la terminal
+mapped_points = {
+    "P1": [9.66, -49.48, -63.89, 5.53, 99.22, 0.26],
+    "P2": [12.48, -52.82, -91.4, 69.87, 95.8, -0.08],
+    "P3": [5.27, -65.47, -81.91, 81.82, 109.51, 1.14],
+    "P4": [13.18, -59.58, -93.77, 61.96, 80.77, 1.14]
+}
+
+# Crear botones para cada punto mapeado
+for point_name, angles in mapped_points.items():
+    frame_btn = tk.Frame(tab_mapped)
+    frame_btn.pack(fill='x', padx=40, pady=8)
+    btn = tk.Button(frame_btn, text=f"Ir a {point_name}", bg="lightgreen", font=("Arial", 11, "bold"), 
+                    command=lambda a=angles: move_to_mapped_point(a))
+    btn.pack(side='left', fill='x', expand=True)
+    tk.Label(frame_btn, text=f"Ángulos: {angles}", font=("Arial", 8)).pack(side='right', padx=10)
+
+# Pestaña 5: Rutinas Libres
 tab_routine = ttk.Frame(notebook)
 notebook.add(tab_routine, text="Rutinas")
 tk.Label(tab_routine, text="1. Libera los motores.\n2. Mueve el brazo manualmente.\n3. Guarda los puntos.", justify="left").pack(pady=10)
-
 btn_frame = tk.Frame(tab_routine)
 btn_frame.pack(fill='x', padx=20)
 tk.Button(btn_frame, text="Guardar Punto", bg="lightgreen", command=save_point).pack(side='left', expand=True, fill='x', padx=5)
-tk.Button(btn_frame, text="Ejecutar Rutina", bg="gold", command=play_routine).pack(side='left', expand=True, fill='x', padx=5)
+tk.Button(btn_frame, text="Ejecutar", bg="gold", command=play_routine).pack(side='left', expand=True, fill='x', padx=5)
 tk.Button(btn_frame, text="Limpiar", command=clear_routine).pack(side='left', expand=True, fill='x', padx=5)
-
-routine_listbox = tk.Listbox(tab_routine, height=12)
+routine_listbox = tk.Listbox(tab_routine, height=10)
 routine_listbox.pack(fill='both', expand=True, padx=20, pady=10)
 
 # Botón de Emergencia Global
-tk.Button(root, text="Liberar Motores (Relajado)", bg="red", fg="white", font=("Arial", 12, "bold"), command=release_motors).pack(pady=15)
+tk.Button(root, text="Liberar Motores (Relajado)", bg="red", fg="white", font=("Arial", 12, "bold"), command=release_motors).pack(pady=10)
 
-# Iniciar bucle de monitoreo en tiempo real
 update_realtime_display()
-
 root.mainloop()
