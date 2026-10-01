@@ -54,7 +54,6 @@ load_points()
 # Variables globales para control de estado
 routine_points = []
 mapping_waypoints = []
-saved_map_points = []
 mapping_index = 0
 is_mapping = False
 is_updating_sliders = False
@@ -152,7 +151,7 @@ def move_to_mapped_point(angles):
     if mc:
         mc.send_angles(angles, speed_var.get())
 
-# Funciones específicas para Pestaña 4 (Puntos Fijos y Persistentes)
+# Funciones específicas para Pestaña 3 (Puntos Fijos y Persistentes)
 def refresh_fixed_points_listbox():
     fixed_points_listbox.delete(0, tk.END)
     for i, angles in enumerate(saved_angle_points):
@@ -181,7 +180,7 @@ def go_to_selected_angle_point():
         angles = saved_angle_points[idx]
         move_to_mapped_point(angles)
 
-# --- Funciones de Barrido Rectangular 2D ---
+# --- Funciones de Barrido Rectangular 2D (Sólo Extremos) ---
 def start_sweep():
     global mapping_waypoints, mapping_index, is_mapping
     if not mc: return
@@ -194,7 +193,6 @@ def start_sweep():
     try:
         width_x = float(rect_width_var.get())
         length_y = float(rect_length_var.get())
-        step_y = float(rect_step_var.get())
         delay_ms = int(delay_var.get())
     except ValueError:
         messagebox.showerror("Error", "Asegúrate de ingresar números válidos para el rectángulo.")
@@ -203,18 +201,12 @@ def start_sweep():
     x0, y0, z0, rx, ry, rz = current_coords
     mapping_waypoints.clear()
     
-    # Generar trayectoria de barrido (zigzag)
-    y_current = 0.0
-    direction = 1 # 1 va hacia la derecha, -1 va hacia la izquierda
-    while y_current <= length_y:
-        if direction == 1:
-            mapping_waypoints.append([x0, y0 + y_current, z0, rx, ry, rz])
-            mapping_waypoints.append([x0 + width_x, y0 + y_current, z0, rx, ry, rz])
-        else:
-            mapping_waypoints.append([x0 + width_x, y0 + y_current, z0, rx, ry, rz])
-            mapping_waypoints.append([x0, y0 + y_current, z0, rx, ry, rz])
-        y_current += step_y
-        direction *= -1
+    # Generar trayectoria únicamente a los 4 extremos (esquinas) y regresar al inicio
+    mapping_waypoints.append([x0, y0, z0, rx, ry, rz])                      # 1: Inicio
+    mapping_waypoints.append([x0 + width_x, y0, z0, rx, ry, rz])            # 2: Extremo X
+    mapping_waypoints.append([x0 + width_x, y0 + length_y, z0, rx, ry, rz]) # 3: Extremo XY
+    mapping_waypoints.append([x0, y0 + length_y, z0, rx, ry, rz])           # 4: Extremo Y
+    mapping_waypoints.append([x0, y0, z0, rx, ry, rz])                      # 5: Regreso al origen para cerrar cuadro
 
     mapping_index = 0
     is_mapping = True
@@ -225,9 +217,9 @@ def start_sweep():
     ax.clear()
     xs = [p[0] for p in mapping_waypoints]
     ys = [p[1] for p in mapping_waypoints]
-    ax.plot(xs, ys, 'k--', alpha=0.5, label="Ruta de Barrido")
+    ax.plot(xs, ys, 'k-', alpha=0.5, label="Contorno Rectangular")
     ax.scatter([x0], [y0], c='green', marker='o', s=100, label="Inicio")
-    ax.set_title("Barrido Rectangular XY")
+    ax.set_title("Recorrido por Extremos XY")
     ax.set_xlabel("X (mm)")
     ax.set_ylabel("Y (mm)")
     ax.legend()
@@ -253,20 +245,20 @@ def execute_sweep_step(delay_ms):
         root.after(delay_ms, lambda: execute_sweep_step(delay_ms))
     else:
         is_mapping = False
-        lbl_mapping_status.config(text="Barrido completado exitosamente.")
+        lbl_mapping_status.config(text="Recorrido completado exitosamente.")
         btn_start_map.config(state=tk.NORMAL)
         btn_stop_map.config(state=tk.DISABLED)
 
 def stop_sweep():
     global is_mapping
     is_mapping = False
-    lbl_mapping_status.config(text="Barrido detenido por el usuario.")
+    lbl_mapping_status.config(text="Recorrido detenido por el usuario.")
     btn_start_map.config(state=tk.NORMAL)
     btn_stop_map.config(state=tk.DISABLED)
 
 # --- Algoritmo de Laparoscopía (RCM) ---
 def execute_laparoscopy_cone():
-    """Genera una trayectoria cónica manteniendo un punto de incisión fijo (RCM)"""
+    """Genera una trayectoria cónica manteniendo un punto de incisión fijo (RCM) sin bloquear la GUI"""
     if not mc: return
     try:
         xp = float(pivot_x_var.get())
@@ -286,17 +278,21 @@ def execute_laparoscopy_cone():
         y_tcp = yp + R * math.sin(theta)
         z_tcp = zp + h
         
-        # Aproximación geométrica para los ángulos de Euler orientados al pivote
         ry = math.degrees(math.atan2(x_tcp - xp, z_tcp - zp))
         rx = math.degrees(math.atan2(y_tcp - yp, z_tcp - zp))
         rz = 0.0 
         
         cone_trajectory.append([x_tcp, y_tcp, z_tcp, rx, ry, rz])
     
-    for point in cone_trajectory:
-        mc.send_coords(point, speed_var.get(), 1)
-        time.sleep(0.5)
-    messagebox.showinfo("Simulación Completada", "Trayectoria cónica RCM finalizada.")
+    def step_cone(idx):
+        if idx < len(cone_trajectory):
+            if mc: mc.send_coords(cone_trajectory[idx], speed_var.get(), 1)
+            root.after(500, lambda: step_cone(idx + 1))
+        else:
+            messagebox.showinfo("Simulación Completada", "Trayectoria cónica RCM finalizada.")
+
+    step_cone(0)
+
 
 # ==========================================
 # --- CONSTRUCCIÓN DE LA INTERFAZ GRÁFICA ---
@@ -341,9 +337,9 @@ for i, limits in enumerate(angle_limits):
     frame = tk.Frame(tab_angles)
     frame.pack(fill='x', padx=10, pady=5)
     tk.Label(frame, text=f"J{i+1}:", width=5).pack(side='left')
-    slider = tk.Scale(frame, from_=limits[0], to=limits[1], orient='horizontal', length=400, command=update_angles)
-    slider.bind("", on_slider_press)
-    slider.bind("", on_slider_release)
+    slider = tk.Scale(frame, from_=limits[0], to=limits[1], orient='horizontal', length=400, command=update_angles, resolution=0.1)
+    slider.bind("<" + "ButtonPress-1" + ">", on_slider_press)
+    slider.bind("<" + "ButtonRelease-1" + ">", on_slider_release)
     slider.set(0)
     slider.pack(side='right')
     angle_sliders.append(slider)
@@ -362,9 +358,9 @@ for i, limits in enumerate(coord_limits):
     frame = tk.Frame(coords_slider_frame)
     frame.pack(fill='x', padx=50, pady=2)
     tk.Label(frame, text=f"{coord_labels[i]}:", width=5).pack(side='left')
-    slider = tk.Scale(frame, from_=limits[0], to=limits[1], orient='horizontal', length=400)
-    slider.bind("", on_slider_press)
-    slider.bind("", on_slider_release)
+    slider = tk.Scale(frame, from_=limits[0], to=limits[1], orient='horizontal', length=400, resolution=0.1)
+    slider.bind("<" + "ButtonPress-1" + ">", on_slider_press)
+    slider.bind("<" + "ButtonRelease-1" + ">", on_slider_release)
     slider.set(200 if coord_labels[i] == 'Z' else 0)
     slider.pack(side='right')
     coord_sliders.append(slider)
@@ -383,7 +379,7 @@ for i, label_text in enumerate(coord_labels):
     f = tk.Frame(text_inputs_container)
     f.grid(row=i//3, column=i%3, padx=15, pady=5)
     tk.Label(f, text=f"{label_text}:", width=4).pack(side='left')
-    var = tk.StringVar(value="200" if label_text == 'Z' else "0")
+    var = tk.StringVar(value="200.0" if label_text == 'Z' else "0.0")
     entry = tk.Entry(f, textvariable=var, width=10, justify='center')
     entry.pack(side='right')
     text_coord_vars.append(var)
@@ -413,22 +409,19 @@ notebook.add(tab_mapping, text="Barrido Rectangular")
 map_ctrl_frame = tk.Frame(tab_mapping)
 map_ctrl_frame.pack(side='left', fill='y', padx=10, pady=10)
 
-tk.Label(map_ctrl_frame, text="Config. de Barrido (XY)", font=("Arial", 10, "bold")).pack(pady=5)
+tk.Label(map_ctrl_frame, text="Config. de Extremos (XY)", font=("Arial", 10, "bold")).pack(pady=5)
 rect_width_var = tk.StringVar(value="60.0")
 rect_length_var = tk.StringVar(value="60.0")
-rect_step_var = tk.StringVar(value="10.0")
 delay_var = tk.StringVar(value="2000")
 
 tk.Label(map_ctrl_frame, text="Ancho X (mm):").pack()
 tk.Entry(map_ctrl_frame, textvariable=rect_width_var, width=8).pack()
 tk.Label(map_ctrl_frame, text="Largo Y (mm):").pack()
 tk.Entry(map_ctrl_frame, textvariable=rect_length_var, width=8).pack()
-tk.Label(map_ctrl_frame, text="Paso Y (Avance en mm):").pack()
-tk.Entry(map_ctrl_frame, textvariable=rect_step_var, width=8).pack()
-tk.Label(map_ctrl_frame, text="Pausa/Velocidad (ms):").pack()
+tk.Label(map_ctrl_frame, text="Pausa en Esquinas (ms):").pack()
 tk.Entry(map_ctrl_frame, textvariable=delay_var, width=8).pack()
 
-btn_start_map = tk.Button(map_ctrl_frame, text="Iniciar Barrido", bg="lightgreen", command=start_sweep)
+btn_start_map = tk.Button(map_ctrl_frame, text="Iniciar Recorrido", bg="lightgreen", command=start_sweep)
 btn_start_map.pack(pady=10)
 btn_stop_map = tk.Button(map_ctrl_frame, text="Detener", bg="salmon", command=stop_sweep, state=tk.DISABLED)
 btn_stop_map.pack()
@@ -463,8 +456,8 @@ tk.Label(tab_laparo, text="Simulación de Centro de Movimiento Remoto (RCM)", fo
 laparo_frame = tk.Frame(tab_laparo)
 laparo_frame.pack(pady=10)
 
-pivot_x_var, pivot_y_var, pivot_z_var = tk.StringVar(value="200"), tk.StringVar(value="0"), tk.StringVar(value="100")
-cone_radius_var, cone_height_var = tk.StringVar(value="50"), tk.StringVar(value="150")
+pivot_x_var, pivot_y_var, pivot_z_var = tk.StringVar(value="200.0"), tk.StringVar(value="0.0"), tk.StringVar(value="100.0")
+cone_radius_var, cone_height_var = tk.StringVar(value="50.0"), tk.StringVar(value="150.0")
 cone_steps_var = tk.StringVar(value="12")
 
 tk.Label(laparo_frame, text="Punto de Incisión (Pivote RCM) X, Y, Z:").grid(row=0, column=0, pady=5, sticky='e')
