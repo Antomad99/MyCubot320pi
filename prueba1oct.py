@@ -4,7 +4,7 @@ import math
 import time
 from pymycobot import MyCobot320
 
-# Integración de Matplotlib para la interfaz
+# Integración de Matplotlib para la visualización espacial
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
@@ -18,6 +18,7 @@ except Exception as e:
     print(f"Error de conexión: {e}")
     mc = None
 
+# Variables globales para control de estado
 routine_points = []
 mapping_waypoints = []
 saved_map_points = []
@@ -25,29 +26,21 @@ mapping_index = 0
 is_mapping = False
 is_updating_sliders = False
 
-# --- Funciones de Control Básicas ---
+# --- LISTA DE PUNTOS GUARDADOS SOLICITADA ---
+saved_angle_points = [
+    [9.66, -49.48, -63.89, 5.53, 99.22, 0.26],
+    [12.48, -52.82, -91.4, 69.87, 95.8, -0.08],
+    [5.27, -65.47, -81.91, 81.82, 109.51, 1.14],
+    [13.18, -59.58, -93.77, 61.96, 80.77, 1.14],
+]
+
+# --- Funciones de Control y Sincronización ---
 def update_angles(val=None):
-    if is_updating_sliders: return
+    if is_updating_sliders:
+        return
     if mc:
         angles = [s.get() for s in angle_sliders]
         mc.send_angles(angles, speed_var.get())
-
-def sync_interface():
-    global is_updating_sliders
-    if not mc: return
-    try:
-        angles = mc.get_angles()
-        coords = mc.get_coords()
-        is_updating_sliders = True
-        if angles and len(angles) == 6:
-            for slider, val in zip(angle_sliders, angles): slider.set(val)
-        if coords and len(coords) == 6:
-            for slider, val in zip(coord_sliders, coords): slider.set(val)
-        is_updating_sliders = False
-        messagebox.showinfo("Sincronización Exitosa", "Postura actualizada.")
-    except Exception as e:
-        is_updating_sliders = False
-        messagebox.showerror("Error", f"Fallo al sincronizar: {e}")
 
 def send_current_coords():
     if mc:
@@ -60,18 +53,20 @@ def send_text_coords():
             coords = [float(var.get()) for var in text_coord_vars]
             mc.send_coords(coords, speed_var.get(), 0) 
         except ValueError:
-            messagebox.showerror("Error", "Valores numéricos requeridos.")
+            messagebox.showerror("Error", "Ingresa únicamente valores numéricos.")
 
 def go_home():
     if mc:
         mc.send_angles([0, 0, 0, 0, 0, 0], speed_var.get())
         global is_updating_sliders
         is_updating_sliders = True
-        for slider in angle_sliders: slider.set(0)
+        for slider in angle_sliders:
+            slider.set(0)
         is_updating_sliders = False
 
 def release_motors():
-    if mc: mc.release_all_servos()
+    if mc:
+        mc.release_all_servos()
 
 def energize_motors():
     if mc:
@@ -80,7 +75,60 @@ def energize_motors():
         if current_angles and len(current_angles) == 6:
             mc.send_angles(current_angles, speed_var.get())
 
-# --- Funciones de Mapeo y Ploteo ---
+def update_realtime_display():
+    """Monitoreo continuo de las coordenadas del TCP"""
+    if mc:
+        try:
+            coords = mc.get_coords()
+            if coords and len(coords) == 6:
+                for i, val in enumerate(coords):
+                    realtime_labels[i].config(text=f"{coord_labels[i]}: {val:.2f}")
+        except Exception:
+            pass
+    root.after(500, update_realtime_display)
+
+# --- Funciones de Rutinas y Puntos ---
+def save_point():
+    if mc:
+        current_angles = mc.get_angles()
+        if current_angles:
+            routine_points.append(current_angles)
+            routine_listbox.insert(tk.END, f"P {len(routine_points)}: {current_angles}")
+
+def play_routine(index=0):
+    if mc and index < len(routine_points):
+        mc.send_angles(routine_points[index], speed_var.get())
+        root.after(2500, play_routine, index + 1)
+
+def clear_routine():
+    routine_points.clear()
+    routine_listbox.delete(0, tk.END)
+
+def move_to_mapped_point(angles):
+    if mc:
+        mc.send_angles(angles, speed_var.get())
+        global is_updating_sliders
+        is_updating_sliders = True
+        for slider, angle in zip(angle_sliders, angles):
+            slider.set(angle)
+        is_updating_sliders = False
+
+# Funciones específicas para Pestaña 4 (Puntos Fijos)
+def add_new_angle_point():
+    if mc:
+        current_angles = mc.get_angles()
+        if current_angles and len(current_angles) == 6:
+            saved_angle_points.append(current_angles)
+            fixed_points_listbox.insert(tk.END, f"P{len(saved_angle_points)}: {current_angles}")
+
+def go_to_selected_angle_point():
+    selection = fixed_points_listbox.curselection()
+    if selection and mc:
+        idx = selection[0]
+        angles = saved_angle_points[idx]
+        move_to_mapped_point(angles)
+
+# --- Funciones de Mapeo y Ploteo 2D ---
 def start_mapping():
     global mapping_waypoints, mapping_index, is_mapping
     if not mc: return
@@ -97,13 +145,12 @@ def start_mapping():
         paso_y = float(step_y_var.get())
         delay_ms = int(delay_var.get())
     except ValueError:
-        messagebox.showerror("Error", "Formatos de malla inválidos.")
+        messagebox.showerror("Error", "Asegúrate de ingresar números válidos en la configuración de malla.")
         return
 
     x0, y0, z0, rx, ry, rz = current_coords
     mapping_waypoints.clear()
     
-    # Generar trayectoria de malla
     for j in range(puntos_y):
         rango_x = range(puntos_x) if j % 2 == 0 else reversed(range(puntos_x))
         for i in rango_x:
@@ -114,7 +161,7 @@ def start_mapping():
     btn_start_map.config(state=tk.DISABLED)
     btn_stop_map.config(state=tk.NORMAL)
     
-    # Configurar Gráfico
+    # Preparar el gráfico de Matplotlib
     ax.clear()
     xs = [p[0] for p in mapping_waypoints]
     ys = [p[1] for p in mapping_waypoints]
@@ -122,6 +169,7 @@ def start_mapping():
     ax.set_title("Plano de Mapeo XY")
     ax.set_xlabel("X (mm)")
     ax.set_ylabel("Y (mm)")
+    ax.grid(True)
     canvas.draw()
 
     execute_mapping_step(delay_ms)
@@ -134,45 +182,47 @@ def execute_mapping_step(delay_ms):
         punto = mapping_waypoints[mapping_index]
         if mc: mc.send_coords(punto, speed_var.get(), 1) 
         
-        # Actualizar Gráfico
+        # Actualizar ploteo con la posición actual
         ax.scatter(punto[0], punto[1], c='blue')
         canvas.draw()
         
-        lbl_mapping_status.config(text=f"Mapeando: {mapping_index + 1}/{len(mapping_waypoints)}\nX: {punto[0]:.2f} | Y: {punto[1]:.2f}")
+        lbl_mapping_status.config(text=f"Mapeando: Punto {mapping_index + 1}/{len(mapping_waypoints)}\nX: {punto[0]:.2f} | Y: {punto[1]:.2f}")
         mapping_index += 1
         root.after(delay_ms, lambda: execute_mapping_step(delay_ms))
     else:
         is_mapping = False
-        lbl_mapping_status.config(text="Mapeo completado.")
+        lbl_mapping_status.config(text="Mapeo completado exitosamente.")
         btn_start_map.config(state=tk.NORMAL)
         btn_stop_map.config(state=tk.DISABLED)
 
 def stop_mapping():
     global is_mapping
     is_mapping = False
-    lbl_mapping_status.config(text="Detenido.")
+    lbl_mapping_status.config(text="Mapeo detenido por el usuario.")
     btn_start_map.config(state=tk.NORMAL)
     btn_stop_map.config(state=tk.DISABLED)
 
 def save_current_map_point():
+    """Guarda la coordenada actual en la lista del mapa y la grafica"""
     if not mc: return
     coords = mc.get_coords()
-    if coords:
+    if coords and len(coords) == 6:
         saved_map_points.append(coords)
         map_listbox.insert(tk.END, f"P{len(saved_map_points)}: X:{coords[0]:.1f}, Y:{coords[1]:.1f}")
-        # Marcar en el gráfico
-        ax.scatter(coords[0], coords[1], c='red', marker='x', s=100)
+        ax.scatter(coords[0], coords[1], c='red', marker='X', s=100, label="Guardado")
         canvas.draw()
 
 def go_to_saved_map_point():
+    """Envía el robot al punto guardado seleccionado en el mapa"""
     selection = map_listbox.curselection()
     if selection and mc:
         idx = selection[0]
         coords = saved_map_points[idx]
         mc.send_coords(coords, speed_var.get(), 1)
 
-# --- Función de Laparoscopía (Movimiento Cónico RCM) ---
+# --- Algoritmo de Laparoscopía (RCM) ---
 def execute_laparoscopy_cone():
+    """Genera una trayectoria cónica manteniendo un punto de incisión fijo (RCM)"""
     if not mc: return
     try:
         xp = float(pivot_x_var.get())
@@ -182,50 +232,64 @@ def execute_laparoscopy_cone():
         h = float(cone_height_var.get())
         steps = int(cone_steps_var.get())
     except ValueError:
-        messagebox.showerror("Error", "Valores numéricos inválidos para el cono.")
+        messagebox.showerror("Error", "Valores numéricos inválidos para la cinemática del cono.")
         return
 
-    # Generar trayectoria
     cone_trajectory = []
     for i in range(steps):
         theta = (2 * math.pi / steps) * i
-        
-        # Posición del TCP
         x_tcp = xp + R * math.cos(theta)
         y_tcp = yp + R * math.sin(theta)
         z_tcp = zp + h
         
-        # Cálculo de Orientación Euler para apuntar al pivote
-        # Asumiendo convención XYZ básica, ajustamos Pitch(RY) y Roll(RX)
+        # Aproximación geométrica para los ángulos de Euler orientados al pivote
         ry = math.degrees(math.atan2(x_tcp - xp, z_tcp - zp))
         rx = math.degrees(math.atan2(y_tcp - yp, z_tcp - zp))
-        rz = 0.0 # Mantenemos la rotación Z constante
+        rz = 0.0 
         
         cone_trajectory.append([x_tcp, y_tcp, z_tcp, rx, ry, rz])
     
-    # Ejecutar trayectoria
     for point in cone_trajectory:
         mc.send_coords(point, speed_var.get(), 1)
-        time.sleep(0.5) # Pausa entre interpolaciones
-    messagebox.showinfo("Laparoscopía", "Movimiento cónico RCM completado.")
+        time.sleep(0.5)
+    messagebox.showinfo("Simulación Completada", "Trayectoria cónica RCM finalizada.")
 
-# --- Interfaz Gráfica ---
+
+# ==========================================
+# --- CONSTRUCCIÓN DE LA INTERFAZ GRÁFICA ---
+# ==========================================
 root = tk.Tk()
-root.title("MyCobot 320 Pi - Control Académico Avanzado")
-root.geometry("900x900")
+root.title("MyCobot 320 Pi - Control Académico y Mapeo Avanzado")
+root.geometry("850x900")
 
+# Panel Global (Velocidad, Origen)
 global_frame = tk.Frame(root)
-global_frame.pack(fill='x', pady=10, padx=20)
+global_frame.pack(fill='x', pady=5, padx=20)
+
 tk.Label(global_frame, text="Velocidad:", font=("Arial", 10, "bold")).pack(side='left')
 speed_var = tk.IntVar(value=40)
 tk.Scale(global_frame, from_=1, to=100, orient='horizontal', variable=speed_var, length=120).pack(side='left', padx=5)
-tk.Button(global_frame, text="Sincronizar Interfaz", command=sync_interface).pack(side='left', padx=15)
-tk.Button(global_frame, text="Ir al Origen", command=go_home).pack(side='right')
 
+tk.Button(global_frame, text="Ir al Origen", bg="lightgray", command=go_home).pack(side='right')
+
+# --- Panel Global de Posición en Tiempo Real (Visible para todas las pestañas) ---
+coord_labels = ["X", "Y", "Z", "RX", "RY", "RZ"]
+realtime_frame = tk.Frame(root, bd=2, relief="groove")
+realtime_frame.pack(fill='x', pady=5, padx=20)
+
+tk.Label(realtime_frame, text="Posición Actual:", font=("Arial", 10, "bold")).pack(side='left', padx=10)
+
+realtime_labels = []
+for label_text in coord_labels:
+    lbl = tk.Label(realtime_frame, text=f"{label_text}: 0.00", font=("Arial", 10, "bold"), fg="blue")
+    lbl.pack(side='left', padx=10)
+    realtime_labels.append(lbl)
+
+# Contenedor de Pestañas
 notebook = ttk.Notebook(root)
 notebook.pack(pady=10, expand=True, fill='both')
 
-# Pestañas Articulaciones y Coord (Simplificadas en esta vista para brevedad de estructura)
+# --- Pestaña 1: Articulaciones ---
 tab_angles = ttk.Frame(notebook)
 notebook.add(tab_angles, text="Articulaciones")
 angle_limits = [(-168, 168), (-135, 135), (-145, 145), (-148, 148), (-168, 168), (-180, 180)]
@@ -235,68 +299,123 @@ for i, limits in enumerate(angle_limits):
     frame.pack(fill='x', padx=10, pady=5)
     tk.Label(frame, text=f"J{i+1}:", width=5).pack(side='left')
     slider = tk.Scale(frame, from_=limits[0], to=limits[1], orient='horizontal', length=400, command=update_angles)
+    slider.set(0)
     slider.pack(side='right')
     angle_sliders.append(slider)
 
+# --- Pestaña 2: Coordenadas (Sliders) ---
 tab_coords = ttk.Frame(notebook)
 notebook.add(tab_coords, text="Coord (Sliders)")
 coord_limits = [(-350, 350), (-350, 350), (-41, 523.9), (-180, 180), (-180, 180), (-180, 180)]
-coord_labels = ["X", "Y", "Z", "RX", "RY", "RZ"]
 coord_sliders = []
+tk.Label(tab_coords, text="Ajusta los valores y presiona 'Mover'", fg="gray").pack(pady=5)
 for i, limits in enumerate(coord_limits):
     frame = tk.Frame(tab_coords)
     frame.pack(fill='x', padx=10, pady=5)
     tk.Label(frame, text=f"{coord_labels[i]}:", width=5).pack(side='left')
     slider = tk.Scale(frame, from_=limits[0], to=limits[1], orient='horizontal', length=400)
+    slider.set(200 if coord_labels[i] == 'Z' else 0)
     slider.pack(side='right')
     coord_sliders.append(slider)
-tk.Button(tab_coords, text="Mover a Coordenadas", command=send_current_coords).pack(pady=15)
+tk.Button(tab_coords, text="Mover a Coordenadas", bg="orange", command=send_current_coords).pack(pady=15)
 
-# --- Pestaña: Mapeo 2D y Visualización ---
+# --- Pestaña 3: Coordenadas por Texto ---
+tab_text_coords = ttk.Frame(notebook)
+notebook.add(tab_text_coords, text="Coord (Texto)")
+
+tk.Label(tab_text_coords, text="Ingresar Coordenadas", font=("Arial", 12, "bold")).pack(pady=15)
+text_coords_frame = tk.Frame(tab_text_coords)
+text_coords_frame.pack(pady=10)
+
+text_coord_vars = []
+for i, label_text in enumerate(coord_labels):
+    f = tk.Frame(text_coords_frame)
+    f.pack(fill='x', pady=5, padx=10)
+    tk.Label(f, text=f"{label_text}:", width=4).pack(side='left')
+    var = tk.StringVar(value="200" if label_text == 'Z' else "0")
+    entry = tk.Entry(f, textvariable=var, width=15, justify='center')
+    entry.pack(side='right')
+    text_coord_vars.append(var)
+tk.Button(tab_text_coords, text="Aplicar Movimiento", bg="orange", command=send_text_coords).pack(pady=20)
+
+# --- Pestaña 4: Puntos Fijos (Predefinidos y Modificables) ---
+tab_mapped = ttk.Frame(notebook)
+notebook.add(tab_mapped, text="Puntos Fijos")
+
+tk.Label(tab_mapped, text="Posiciones Guardadas (Ángulos)", font=("Arial", 12, "bold")).pack(pady=10)
+
+btn_frame_fijos = tk.Frame(tab_mapped)
+btn_frame_fijos.pack(fill='x', padx=20, pady=5)
+tk.Button(btn_frame_fijos, text="Guardar Postura Actual", bg="lightblue", command=add_new_angle_point).pack(side='left', expand=True, fill='x', padx=5)
+tk.Button(btn_frame_fijos, text="Ir a Posición Seleccionada", bg="lightgreen", command=go_to_selected_angle_point).pack(side='left', expand=True, fill='x', padx=5)
+
+fixed_points_listbox = tk.Listbox(tab_mapped, height=12)
+fixed_points_listbox.pack(fill='both', expand=True, padx=20, pady=10)
+
+# Insertar puntos base solicitados en el Listbox
+for i, angles in enumerate(saved_angle_points):
+    fixed_points_listbox.insert(tk.END, f"P{i+1}: {angles}")
+
+# --- Pestaña 5: Mapeo 2D y Visualización Matplotlib ---
 tab_mapping = ttk.Frame(notebook)
 notebook.add(tab_mapping, text="Mapeo & Visualización")
 
-# Panel Izquierdo: Controles
 map_ctrl_frame = tk.Frame(tab_mapping)
 map_ctrl_frame.pack(side='left', fill='y', padx=10, pady=10)
 
-tk.Label(map_ctrl_frame, text="Config. Malla", font=("Arial", 12, "bold")).pack(pady=5)
+tk.Label(map_ctrl_frame, text="Config. de Malla (XY)", font=("Arial", 10, "bold")).pack(pady=5)
 grid_x_var, grid_y_var = tk.StringVar(value="3"), tk.StringVar(value="3")
 step_x_var, step_y_var = tk.StringVar(value="20.0"), tk.StringVar(value="20.0")
 delay_var = tk.StringVar(value="3000")
 
 tk.Label(map_ctrl_frame, text="Puntos X / Y:").pack()
-tk.Entry(map_ctrl_frame, textvariable=grid_x_var, width=5).pack()
-tk.Entry(map_ctrl_frame, textvariable=grid_y_var, width=5).pack()
+tk.Entry(map_ctrl_frame, textvariable=grid_x_var, width=6).pack()
+tk.Entry(map_ctrl_frame, textvariable=grid_y_var, width=6).pack()
 tk.Label(map_ctrl_frame, text="Pasos X / Y (mm):").pack()
-tk.Entry(map_ctrl_frame, textvariable=step_x_var, width=5).pack()
-tk.Entry(map_ctrl_frame, textvariable=step_y_var, width=5).pack()
+tk.Entry(map_ctrl_frame, textvariable=step_x_var, width=6).pack()
+tk.Entry(map_ctrl_frame, textvariable=step_y_var, width=6).pack()
+tk.Label(map_ctrl_frame, text="Pausa (ms):").pack()
+tk.Entry(map_ctrl_frame, textvariable=delay_var, width=6).pack()
 
 btn_start_map = tk.Button(map_ctrl_frame, text="Iniciar Mapeo", bg="lightgreen", command=start_mapping)
 btn_start_map.pack(pady=5)
 btn_stop_map = tk.Button(map_ctrl_frame, text="Detener", bg="salmon", command=stop_mapping, state=tk.DISABLED)
 btn_stop_map.pack()
-lbl_mapping_status = tk.Label(map_ctrl_frame, text="Listo.")
+lbl_mapping_status = tk.Label(map_ctrl_frame, text="Esperando instrucciones...", fg="gray")
 lbl_mapping_status.pack(pady=10)
 
-tk.Button(map_ctrl_frame, text="Guardar Punto Actual", bg="lightblue", command=save_current_map_point).pack(pady=10)
-map_listbox = tk.Listbox(map_ctrl_frame, height=8)
-map_listbox.pack(fill='x')
-tk.Button(map_ctrl_frame, text="Ir al Punto Seleccionado", command=go_to_saved_map_point).pack(pady=5)
+ttk.Separator(map_ctrl_frame, orient='horizontal').pack(fill='x', pady=5)
+tk.Label(map_ctrl_frame, text="Puntos de Interés", font=("Arial", 10, "bold")).pack()
+tk.Button(map_ctrl_frame, text="Guardar Punto Actual", bg="lightblue", command=save_current_map_point).pack(pady=5)
+map_listbox = tk.Listbox(map_ctrl_frame, height=6)
+map_listbox.pack(fill='x', pady=5)
+tk.Button(map_ctrl_frame, text="Ir al Punto", command=go_to_saved_map_point).pack()
 
-# Panel Derecho: Gráfico Matplotlib
+# Gráfico de Matplotlib
 fig = Figure(figsize=(5, 5), dpi=100)
 ax = fig.add_subplot(111)
 ax.set_title("Plano de Mapeo XY")
+ax.grid(True)
 canvas = FigureCanvasTkAgg(fig, master=tab_mapping)
-canvas.get_tk_widget().pack(side='right', fill='both', expand=True)
+canvas.get_tk_widget().pack(side='right', fill='both', expand=True, padx=10, pady=10)
 
-# --- Pestaña: Laparoscopía (Cono RCM) ---
+# --- Pestaña 6: Rutinas (Enseñanza Manual) ---
+tab_routine = ttk.Frame(notebook)
+notebook.add(tab_routine, text="Rutinas")
+tk.Label(tab_routine, text="Protocolo de Enseñanza:\n1. Libera motores.\n2. Mueve el robot manualmente a la pose deseada.\n3. Guarda el punto.\n4. Energiza y ejecuta.", justify="left").pack(pady=10)
+btn_frame = tk.Frame(tab_routine)
+btn_frame.pack(fill='x', padx=20)
+tk.Button(btn_frame, text="Guardar Pose Actual", bg="lightgreen", command=save_point).pack(side='left', expand=True, fill='x', padx=5)
+tk.Button(btn_frame, text="Ejecutar Rutina", bg="gold", command=play_routine).pack(side='left', expand=True, fill='x', padx=5)
+tk.Button(btn_frame, text="Limpiar Lista", command=clear_routine).pack(side='left', expand=True, fill='x', padx=5)
+routine_listbox = tk.Listbox(tab_routine, height=12)
+routine_listbox.pack(fill='both', expand=True, padx=20, pady=10)
+
+# --- Pestaña 7: Laparoscopía (RCM) ---
 tab_laparo = ttk.Frame(notebook)
 notebook.add(tab_laparo, text="Laparoscopía (RCM)")
 
-tk.Label(tab_laparo, text="Simulación de Centro de Movimiento Remoto", font=("Arial", 12, "bold")).pack(pady=15)
-
+tk.Label(tab_laparo, text="Simulación de Centro de Movimiento Remoto (RCM)", font=("Arial", 12, "bold")).pack(pady=15)
 laparo_frame = tk.Frame(tab_laparo)
 laparo_frame.pack(pady=10)
 
@@ -304,26 +423,28 @@ pivot_x_var, pivot_y_var, pivot_z_var = tk.StringVar(value="200"), tk.StringVar(
 cone_radius_var, cone_height_var = tk.StringVar(value="50"), tk.StringVar(value="150")
 cone_steps_var = tk.StringVar(value="12")
 
-tk.Label(laparo_frame, text="Punto de Incisión (Pivote RCM) X, Y, Z:").grid(row=0, column=0, pady=5)
-tk.Entry(laparo_frame, textvariable=pivot_x_var, width=6).grid(row=0, column=1)
-tk.Entry(laparo_frame, textvariable=pivot_y_var, width=6).grid(row=0, column=2)
-tk.Entry(laparo_frame, textvariable=pivot_z_var, width=6).grid(row=0, column=3)
+tk.Label(laparo_frame, text="Punto de Incisión (Pivote RCM) X, Y, Z:").grid(row=0, column=0, pady=5, sticky='e')
+tk.Entry(laparo_frame, textvariable=pivot_x_var, width=6).grid(row=0, column=1, padx=2)
+tk.Entry(laparo_frame, textvariable=pivot_y_var, width=6).grid(row=0, column=2, padx=2)
+tk.Entry(laparo_frame, textvariable=pivot_z_var, width=6).grid(row=0, column=3, padx=2)
 
-tk.Label(laparo_frame, text="Radio del Cono en TCP (mm):").grid(row=1, column=0, pady=5)
+tk.Label(laparo_frame, text="Radio del Cono en TCP (mm):").grid(row=1, column=0, pady=5, sticky='e')
 tk.Entry(laparo_frame, textvariable=cone_radius_var, width=6).grid(row=1, column=1)
 
-tk.Label(laparo_frame, text="Altura TCP sobre Pivote (mm):").grid(row=2, column=0, pady=5)
+tk.Label(laparo_frame, text="Altura TCP sobre Pivote (mm):").grid(row=2, column=0, pady=5, sticky='e')
 tk.Entry(laparo_frame, textvariable=cone_height_var, width=6).grid(row=2, column=1)
 
-tk.Label(laparo_frame, text="Resolución (pasos por vuelta):").grid(row=3, column=0, pady=5)
+tk.Label(laparo_frame, text="Resolución (pasos por vuelta):").grid(row=3, column=0, pady=5, sticky='e')
 tk.Entry(laparo_frame, textvariable=cone_steps_var, width=6).grid(row=3, column=1)
 
 tk.Button(tab_laparo, text="Ejecutar Cono Laparoscópico", bg="orange", font=("Arial", 11, "bold"), command=execute_laparoscopy_cone).pack(pady=20)
 
-# Botones de Energía
+# --- Botones de Control de Energía del Hardware ---
 power_frame = tk.Frame(root)
 power_frame.pack(fill='x', pady=10, padx=20)
-tk.Button(power_frame, text="Liberar Motores", bg="red", fg="white", command=release_motors).pack(side='left', expand=True, fill='x', padx=5)
-tk.Button(power_frame, text="Energizar Motores", bg="green", fg="white", command=energize_motors).pack(side='right', expand=True, fill='x', padx=5)
+tk.Button(power_frame, text="Liberar Motores", bg="red", fg="white", font=("Arial", 12, "bold"), command=release_motors).pack(side='left', expand=True, fill='x', padx=5)
+tk.Button(power_frame, text="Energizar Motores", bg="green", fg="white", font=("Arial", 12, "bold"), command=energize_motors).pack(side='right', expand=True, fill='x', padx=5)
 
+# Iniciar el hilo de actualización de la UI en tiempo real
+update_realtime_display()
 root.mainloop()
