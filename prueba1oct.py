@@ -2,6 +2,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import math
 import time
+import json
+import os
 from pymycobot import MyCobot320
 
 # Integración de Matplotlib para la visualización espacial
@@ -18,6 +20,37 @@ except Exception as e:
     print(f"Error de conexión: {e}")
     mc = None
 
+# Archivo de persistencia de puntos
+POINTS_FILE = "puntos_guardados.json"
+
+# Puntos predefinidos por defecto
+default_angle_points = [
+    [9.66, -49.48, -63.89, 5.53, 99.22, 0.26],
+    [12.48, -52.82, -91.4, 69.87, 95.8, -0.08],
+    [5.27, -65.47, -81.91, 81.82, 109.51, 1.14],
+    [13.18, -59.58, -93.77, 61.96, 80.77, 1.14],
+]
+saved_angle_points = []
+
+# Carga y guardado de puntos fijos
+def load_points():
+    global saved_angle_points
+    if os.path.exists(POINTS_FILE):
+        try:
+            with open(POINTS_FILE, 'r') as f:
+                saved_angle_points = json.load(f)
+        except:
+            saved_angle_points = default_angle_points.copy()
+    else:
+        saved_angle_points = default_angle_points.copy()
+        save_points_to_file()
+
+def save_points_to_file():
+    with open(POINTS_FILE, 'w') as f:
+        json.dump(saved_angle_points, f)
+
+load_points()
+
 # Variables globales para control de estado
 routine_points = []
 mapping_waypoints = []
@@ -25,20 +58,21 @@ saved_map_points = []
 mapping_index = 0
 is_mapping = False
 is_updating_sliders = False
+user_is_interacting = False # Seguro para manipular sliders sin interrupción
 
-# --- LISTA DE PUNTOS GUARDADOS SOLICITADA ---
-saved_angle_points = [
-    [9.66, -49.48, -63.89, 5.53, 99.22, 0.26],
-    [12.48, -52.82, -91.4, 69.87, 95.8, -0.08],
-    [5.27, -65.47, -81.91, 81.82, 109.51, 1.14],
-    [13.18, -59.58, -93.77, 61.96, 80.77, 1.14],
-]
+def on_slider_press(event):
+    global user_is_interacting
+    user_is_interacting = True
+
+def on_slider_release(event):
+    global user_is_interacting
+    user_is_interacting = False
 
 # --- Funciones de Control y Sincronización ---
 def update_angles(val=None):
     if is_updating_sliders:
         return
-    if mc:
+    if mc and user_is_interacting:
         angles = [s.get() for s in angle_sliders]
         mc.send_angles(angles, speed_var.get())
 
@@ -58,11 +92,6 @@ def send_text_coords():
 def go_home():
     if mc:
         mc.send_angles([0, 0, 0, 0, 0, 0], speed_var.get())
-        global is_updating_sliders
-        is_updating_sliders = True
-        for slider in angle_sliders:
-            slider.set(0)
-        is_updating_sliders = False
 
 def release_motors():
     if mc:
@@ -76,15 +105,30 @@ def energize_motors():
             mc.send_angles(current_angles, speed_var.get())
 
 def update_realtime_display():
-    """Monitoreo continuo de las coordenadas del TCP"""
+    """Monitoreo continuo del robot y actualización automática de los sliders"""
+    global is_updating_sliders
     if mc:
         try:
             coords = mc.get_coords()
+            angles = mc.get_angles()
+            
+            # Actualización del panel superior de lectura
             if coords and len(coords) == 6:
                 for i, val in enumerate(coords):
                     realtime_labels[i].config(text=f"{coord_labels[i]}: {val:.2f}")
+            
+            # Actualización en vivo de los sliders (sólo si no los estamos tocando)
+            if not user_is_interacting:
+                is_updating_sliders = True
+                if angles and len(angles) == 6:
+                    for i, val in enumerate(angles):
+                        angle_sliders[i].set(val)
+                if coords and len(coords) == 6:
+                    for i, val in enumerate(coords):
+                        coord_sliders[i].set(val)
+                is_updating_sliders = False
         except Exception:
-            pass
+            is_updating_sliders = False
     root.after(500, update_realtime_display)
 
 # --- Funciones de Rutinas y Puntos ---
@@ -107,19 +151,28 @@ def clear_routine():
 def move_to_mapped_point(angles):
     if mc:
         mc.send_angles(angles, speed_var.get())
-        global is_updating_sliders
-        is_updating_sliders = True
-        for slider, angle in zip(angle_sliders, angles):
-            slider.set(angle)
-        is_updating_sliders = False
 
-# Funciones específicas para Pestaña 4 (Puntos Fijos)
+# Funciones específicas para Pestaña 4 (Puntos Fijos y Persistentes)
+def refresh_fixed_points_listbox():
+    fixed_points_listbox.delete(0, tk.END)
+    for i, angles in enumerate(saved_angle_points):
+        fixed_points_listbox.insert(tk.END, f"P{i+1}: {angles}")
+
 def add_new_angle_point():
     if mc:
         current_angles = mc.get_angles()
         if current_angles and len(current_angles) == 6:
             saved_angle_points.append(current_angles)
-            fixed_points_listbox.insert(tk.END, f"P{len(saved_angle_points)}: {current_angles}")
+            save_points_to_file()
+            refresh_fixed_points_listbox()
+
+def delete_selected_angle_point():
+    selection = fixed_points_listbox.curselection()
+    if selection:
+        idx = selection[0]
+        del saved_angle_points[idx]
+        save_points_to_file()
+        refresh_fixed_points_listbox()
 
 def go_to_selected_angle_point():
     selection = fixed_points_listbox.curselection()
@@ -128,8 +181,8 @@ def go_to_selected_angle_point():
         angles = saved_angle_points[idx]
         move_to_mapped_point(angles)
 
-# --- Funciones de Mapeo y Ploteo 2D ---
-def start_mapping():
+# --- Funciones de Barrido Rectangular 2D ---
+def start_sweep():
     global mapping_waypoints, mapping_index, is_mapping
     if not mc: return
     
@@ -139,22 +192,29 @@ def start_mapping():
         return
 
     try:
-        puntos_x = int(grid_x_var.get())
-        puntos_y = int(grid_y_var.get())
-        paso_x = float(step_x_var.get())
-        paso_y = float(step_y_var.get())
+        width_x = float(rect_width_var.get())
+        length_y = float(rect_length_var.get())
+        step_y = float(rect_step_var.get())
         delay_ms = int(delay_var.get())
     except ValueError:
-        messagebox.showerror("Error", "Asegúrate de ingresar números válidos en la configuración de malla.")
+        messagebox.showerror("Error", "Asegúrate de ingresar números válidos para el rectángulo.")
         return
 
     x0, y0, z0, rx, ry, rz = current_coords
     mapping_waypoints.clear()
     
-    for j in range(puntos_y):
-        rango_x = range(puntos_x) if j % 2 == 0 else reversed(range(puntos_x))
-        for i in rango_x:
-            mapping_waypoints.append([x0 + (i * paso_x), y0 + (j * paso_y), z0, rx, ry, rz])
+    # Generar trayectoria de barrido (zigzag)
+    y_current = 0.0
+    direction = 1 # 1 va hacia la derecha, -1 va hacia la izquierda
+    while y_current <= length_y:
+        if direction == 1:
+            mapping_waypoints.append([x0, y0 + y_current, z0, rx, ry, rz])
+            mapping_waypoints.append([x0 + width_x, y0 + y_current, z0, rx, ry, rz])
+        else:
+            mapping_waypoints.append([x0 + width_x, y0 + y_current, z0, rx, ry, rz])
+            mapping_waypoints.append([x0, y0 + y_current, z0, rx, ry, rz])
+        y_current += step_y
+        direction *= -1
 
     mapping_index = 0
     is_mapping = True
@@ -165,16 +225,18 @@ def start_mapping():
     ax.clear()
     xs = [p[0] for p in mapping_waypoints]
     ys = [p[1] for p in mapping_waypoints]
-    ax.plot(xs, ys, 'k--', alpha=0.5, label="Ruta Planeada")
-    ax.set_title("Plano de Mapeo XY")
+    ax.plot(xs, ys, 'k--', alpha=0.5, label="Ruta de Barrido")
+    ax.scatter([x0], [y0], c='green', marker='o', s=100, label="Inicio")
+    ax.set_title("Barrido Rectangular XY")
     ax.set_xlabel("X (mm)")
     ax.set_ylabel("Y (mm)")
+    ax.legend()
     ax.grid(True)
     canvas.draw()
 
-    execute_mapping_step(delay_ms)
+    execute_sweep_step(delay_ms)
 
-def execute_mapping_step(delay_ms):
+def execute_sweep_step(delay_ms):
     global mapping_index, is_mapping
     if not is_mapping: return
 
@@ -186,39 +248,21 @@ def execute_mapping_step(delay_ms):
         ax.scatter(punto[0], punto[1], c='blue')
         canvas.draw()
         
-        lbl_mapping_status.config(text=f"Mapeando: Punto {mapping_index + 1}/{len(mapping_waypoints)}\nX: {punto[0]:.2f} | Y: {punto[1]:.2f}")
+        lbl_mapping_status.config(text=f"Avanzando: Punto {mapping_index + 1}/{len(mapping_waypoints)}\nX: {punto[0]:.2f} | Y: {punto[1]:.2f}")
         mapping_index += 1
-        root.after(delay_ms, lambda: execute_mapping_step(delay_ms))
+        root.after(delay_ms, lambda: execute_sweep_step(delay_ms))
     else:
         is_mapping = False
-        lbl_mapping_status.config(text="Mapeo completado exitosamente.")
+        lbl_mapping_status.config(text="Barrido completado exitosamente.")
         btn_start_map.config(state=tk.NORMAL)
         btn_stop_map.config(state=tk.DISABLED)
 
-def stop_mapping():
+def stop_sweep():
     global is_mapping
     is_mapping = False
-    lbl_mapping_status.config(text="Mapeo detenido por el usuario.")
+    lbl_mapping_status.config(text="Barrido detenido por el usuario.")
     btn_start_map.config(state=tk.NORMAL)
     btn_stop_map.config(state=tk.DISABLED)
-
-def save_current_map_point():
-    """Guarda la coordenada actual en la lista del mapa y la grafica"""
-    if not mc: return
-    coords = mc.get_coords()
-    if coords and len(coords) == 6:
-        saved_map_points.append(coords)
-        map_listbox.insert(tk.END, f"P{len(saved_map_points)}: X:{coords[0]:.1f}, Y:{coords[1]:.1f}")
-        ax.scatter(coords[0], coords[1], c='red', marker='X', s=100, label="Guardado")
-        canvas.draw()
-
-def go_to_saved_map_point():
-    """Envía el robot al punto guardado seleccionado en el mapa"""
-    selection = map_listbox.curselection()
-    if selection and mc:
-        idx = selection[0]
-        coords = saved_map_points[idx]
-        mc.send_coords(coords, speed_var.get(), 1)
 
 # --- Algoritmo de Laparoscopía (RCM) ---
 def execute_laparoscopy_cone():
@@ -254,13 +298,12 @@ def execute_laparoscopy_cone():
         time.sleep(0.5)
     messagebox.showinfo("Simulación Completada", "Trayectoria cónica RCM finalizada.")
 
-
 # ==========================================
 # --- CONSTRUCCIÓN DE LA INTERFAZ GRÁFICA ---
 # ==========================================
 root = tk.Tk()
-root.title("MyCobot 320 Pi - Control Académico y Mapeo Avanzado")
-root.geometry("850x900")
+root.title("MyCobot 320 Pi - Control Académico Avanzado")
+root.geometry("850x950")
 
 # Panel Global (Velocidad, Origen)
 global_frame = tk.Frame(root)
@@ -268,17 +311,17 @@ global_frame.pack(fill='x', pady=5, padx=20)
 
 tk.Label(global_frame, text="Velocidad:", font=("Arial", 10, "bold")).pack(side='left')
 speed_var = tk.IntVar(value=40)
-tk.Scale(global_frame, from_=1, to=100, orient='horizontal', variable=speed_var, length=120).pack(side='left', padx=5)
+speed_slider = tk.Scale(global_frame, from_=1, to=100, orient='horizontal', variable=speed_var, length=120)
+speed_slider.pack(side='left', padx=5)
 
 tk.Button(global_frame, text="Ir al Origen", bg="lightgray", command=go_home).pack(side='right')
 
-# --- Panel Global de Posición en Tiempo Real (Visible para todas las pestañas) ---
+# --- Panel Global de Posición en Tiempo Real ---
 coord_labels = ["X", "Y", "Z", "RX", "RY", "RZ"]
 realtime_frame = tk.Frame(root, bd=2, relief="groove")
 realtime_frame.pack(fill='x', pady=5, padx=20)
 
 tk.Label(realtime_frame, text="Posición Actual:", font=("Arial", 10, "bold")).pack(side='left', padx=10)
-
 realtime_labels = []
 for label_text in coord_labels:
     lbl = tk.Label(realtime_frame, text=f"{label_text}: 0.00", font=("Arial", 10, "bold"), fg="blue")
@@ -299,107 +342,108 @@ for i, limits in enumerate(angle_limits):
     frame.pack(fill='x', padx=10, pady=5)
     tk.Label(frame, text=f"J{i+1}:", width=5).pack(side='left')
     slider = tk.Scale(frame, from_=limits[0], to=limits[1], orient='horizontal', length=400, command=update_angles)
+    slider.bind("", on_slider_press)
+    slider.bind("", on_slider_release)
     slider.set(0)
     slider.pack(side='right')
     angle_sliders.append(slider)
 
-# --- Pestaña 2: Coordenadas (Sliders) ---
+# --- Pestaña 2: Coordenadas Unificadas (Sliders + Texto) ---
 tab_coords = ttk.Frame(notebook)
-notebook.add(tab_coords, text="Coord (Sliders)")
+notebook.add(tab_coords, text="Coordenadas")
+
+# Mitad superior: Sliders
+coords_slider_frame = tk.Frame(tab_coords)
+coords_slider_frame.pack(fill='x', pady=5)
+tk.Label(coords_slider_frame, text="Control por Deslizador", font=("Arial", 11, "bold")).pack(pady=5)
 coord_limits = [(-350, 350), (-350, 350), (-41, 523.9), (-180, 180), (-180, 180), (-180, 180)]
 coord_sliders = []
-tk.Label(tab_coords, text="Ajusta los valores y presiona 'Mover'", fg="gray").pack(pady=5)
 for i, limits in enumerate(coord_limits):
-    frame = tk.Frame(tab_coords)
-    frame.pack(fill='x', padx=10, pady=5)
+    frame = tk.Frame(coords_slider_frame)
+    frame.pack(fill='x', padx=50, pady=2)
     tk.Label(frame, text=f"{coord_labels[i]}:", width=5).pack(side='left')
     slider = tk.Scale(frame, from_=limits[0], to=limits[1], orient='horizontal', length=400)
+    slider.bind("", on_slider_press)
+    slider.bind("", on_slider_release)
     slider.set(200 if coord_labels[i] == 'Z' else 0)
     slider.pack(side='right')
     coord_sliders.append(slider)
-tk.Button(tab_coords, text="Mover a Coordenadas", bg="orange", command=send_current_coords).pack(pady=15)
+tk.Button(coords_slider_frame, text="Mover a Sliders", bg="orange", command=send_current_coords).pack(pady=10)
 
-# --- Pestaña 3: Coordenadas por Texto ---
-tab_text_coords = ttk.Frame(notebook)
-notebook.add(tab_text_coords, text="Coord (Texto)")
+ttk.Separator(tab_coords, orient='horizontal').pack(fill='x', pady=5)
 
-tk.Label(tab_text_coords, text="Ingresar Coordenadas", font=("Arial", 12, "bold")).pack(pady=15)
-text_coords_frame = tk.Frame(tab_text_coords)
-text_coords_frame.pack(pady=10)
-
+# Mitad inferior: Cajas de Texto
+coords_text_frame = tk.Frame(tab_coords)
+coords_text_frame.pack(fill='x', pady=5)
+tk.Label(coords_text_frame, text="Control por Texto Exacto", font=("Arial", 11, "bold")).pack(pady=5)
+text_inputs_container = tk.Frame(coords_text_frame)
+text_inputs_container.pack()
 text_coord_vars = []
 for i, label_text in enumerate(coord_labels):
-    f = tk.Frame(text_coords_frame)
-    f.pack(fill='x', pady=5, padx=10)
+    f = tk.Frame(text_inputs_container)
+    f.grid(row=i//3, column=i%3, padx=15, pady=5)
     tk.Label(f, text=f"{label_text}:", width=4).pack(side='left')
     var = tk.StringVar(value="200" if label_text == 'Z' else "0")
-    entry = tk.Entry(f, textvariable=var, width=15, justify='center')
+    entry = tk.Entry(f, textvariable=var, width=10, justify='center')
     entry.pack(side='right')
     text_coord_vars.append(var)
-tk.Button(tab_text_coords, text="Aplicar Movimiento", bg="orange", command=send_text_coords).pack(pady=20)
+tk.Button(coords_text_frame, text="Aplicar Coordenadas", bg="orange", command=send_text_coords).pack(pady=10)
 
-# --- Pestaña 4: Puntos Fijos (Predefinidos y Modificables) ---
+
+# --- Pestaña 3: Puntos Fijos (Persistentes) ---
 tab_mapped = ttk.Frame(notebook)
 notebook.add(tab_mapped, text="Puntos Fijos")
 
-tk.Label(tab_mapped, text="Posiciones Guardadas (Ángulos)", font=("Arial", 12, "bold")).pack(pady=10)
+tk.Label(tab_mapped, text="Posiciones Guardadas (Persistentes)", font=("Arial", 12, "bold")).pack(pady=10)
 
 btn_frame_fijos = tk.Frame(tab_mapped)
 btn_frame_fijos.pack(fill='x', padx=20, pady=5)
 tk.Button(btn_frame_fijos, text="Guardar Postura Actual", bg="lightblue", command=add_new_angle_point).pack(side='left', expand=True, fill='x', padx=5)
-tk.Button(btn_frame_fijos, text="Ir a Posición Seleccionada", bg="lightgreen", command=go_to_selected_angle_point).pack(side='left', expand=True, fill='x', padx=5)
+tk.Button(btn_frame_fijos, text="Eliminar Seleccionado", bg="salmon", command=delete_selected_angle_point).pack(side='left', expand=True, fill='x', padx=5)
+tk.Button(btn_frame_fijos, text="Ir a Posición", bg="lightgreen", font=("Arial", 10, "bold"), command=go_to_selected_angle_point).pack(side='left', expand=True, fill='x', padx=5)
 
-fixed_points_listbox = tk.Listbox(tab_mapped, height=12)
+fixed_points_listbox = tk.Listbox(tab_mapped, height=15)
 fixed_points_listbox.pack(fill='both', expand=True, padx=20, pady=10)
+refresh_fixed_points_listbox() # Llenar la lista inicial
 
-# Insertar puntos base solicitados en el Listbox
-for i, angles in enumerate(saved_angle_points):
-    fixed_points_listbox.insert(tk.END, f"P{i+1}: {angles}")
-
-# --- Pestaña 5: Mapeo 2D y Visualización Matplotlib ---
+# --- Pestaña 4: Barrido Rectangular y Visualización Matplotlib ---
 tab_mapping = ttk.Frame(notebook)
-notebook.add(tab_mapping, text="Mapeo & Visualización")
+notebook.add(tab_mapping, text="Barrido Rectangular")
 
 map_ctrl_frame = tk.Frame(tab_mapping)
 map_ctrl_frame.pack(side='left', fill='y', padx=10, pady=10)
 
-tk.Label(map_ctrl_frame, text="Config. de Malla (XY)", font=("Arial", 10, "bold")).pack(pady=5)
-grid_x_var, grid_y_var = tk.StringVar(value="3"), tk.StringVar(value="3")
-step_x_var, step_y_var = tk.StringVar(value="20.0"), tk.StringVar(value="20.0")
-delay_var = tk.StringVar(value="3000")
+tk.Label(map_ctrl_frame, text="Config. de Barrido (XY)", font=("Arial", 10, "bold")).pack(pady=5)
+rect_width_var = tk.StringVar(value="60.0")
+rect_length_var = tk.StringVar(value="60.0")
+rect_step_var = tk.StringVar(value="10.0")
+delay_var = tk.StringVar(value="2000")
 
-tk.Label(map_ctrl_frame, text="Puntos X / Y:").pack()
-tk.Entry(map_ctrl_frame, textvariable=grid_x_var, width=6).pack()
-tk.Entry(map_ctrl_frame, textvariable=grid_y_var, width=6).pack()
-tk.Label(map_ctrl_frame, text="Pasos X / Y (mm):").pack()
-tk.Entry(map_ctrl_frame, textvariable=step_x_var, width=6).pack()
-tk.Entry(map_ctrl_frame, textvariable=step_y_var, width=6).pack()
-tk.Label(map_ctrl_frame, text="Pausa (ms):").pack()
-tk.Entry(map_ctrl_frame, textvariable=delay_var, width=6).pack()
+tk.Label(map_ctrl_frame, text="Ancho X (mm):").pack()
+tk.Entry(map_ctrl_frame, textvariable=rect_width_var, width=8).pack()
+tk.Label(map_ctrl_frame, text="Largo Y (mm):").pack()
+tk.Entry(map_ctrl_frame, textvariable=rect_length_var, width=8).pack()
+tk.Label(map_ctrl_frame, text="Paso Y (Avance en mm):").pack()
+tk.Entry(map_ctrl_frame, textvariable=rect_step_var, width=8).pack()
+tk.Label(map_ctrl_frame, text="Pausa/Velocidad (ms):").pack()
+tk.Entry(map_ctrl_frame, textvariable=delay_var, width=8).pack()
 
-btn_start_map = tk.Button(map_ctrl_frame, text="Iniciar Mapeo", bg="lightgreen", command=start_mapping)
-btn_start_map.pack(pady=5)
-btn_stop_map = tk.Button(map_ctrl_frame, text="Detener", bg="salmon", command=stop_mapping, state=tk.DISABLED)
+btn_start_map = tk.Button(map_ctrl_frame, text="Iniciar Barrido", bg="lightgreen", command=start_sweep)
+btn_start_map.pack(pady=10)
+btn_stop_map = tk.Button(map_ctrl_frame, text="Detener", bg="salmon", command=stop_sweep, state=tk.DISABLED)
 btn_stop_map.pack()
 lbl_mapping_status = tk.Label(map_ctrl_frame, text="Esperando instrucciones...", fg="gray")
 lbl_mapping_status.pack(pady=10)
 
-ttk.Separator(map_ctrl_frame, orient='horizontal').pack(fill='x', pady=5)
-tk.Label(map_ctrl_frame, text="Puntos de Interés", font=("Arial", 10, "bold")).pack()
-tk.Button(map_ctrl_frame, text="Guardar Punto Actual", bg="lightblue", command=save_current_map_point).pack(pady=5)
-map_listbox = tk.Listbox(map_ctrl_frame, height=6)
-map_listbox.pack(fill='x', pady=5)
-tk.Button(map_ctrl_frame, text="Ir al Punto", command=go_to_saved_map_point).pack()
-
 # Gráfico de Matplotlib
 fig = Figure(figsize=(5, 5), dpi=100)
 ax = fig.add_subplot(111)
-ax.set_title("Plano de Mapeo XY")
+ax.set_title("Plano de Barrido XY")
 ax.grid(True)
 canvas = FigureCanvasTkAgg(fig, master=tab_mapping)
 canvas.get_tk_widget().pack(side='right', fill='both', expand=True, padx=10, pady=10)
 
-# --- Pestaña 6: Rutinas (Enseñanza Manual) ---
+# --- Pestaña 5: Rutinas (Enseñanza Manual) ---
 tab_routine = ttk.Frame(notebook)
 notebook.add(tab_routine, text="Rutinas")
 tk.Label(tab_routine, text="Protocolo de Enseñanza:\n1. Libera motores.\n2. Mueve el robot manualmente a la pose deseada.\n3. Guarda el punto.\n4. Energiza y ejecuta.", justify="left").pack(pady=10)
@@ -411,7 +455,7 @@ tk.Button(btn_frame, text="Limpiar Lista", command=clear_routine).pack(side='lef
 routine_listbox = tk.Listbox(tab_routine, height=12)
 routine_listbox.pack(fill='both', expand=True, padx=20, pady=10)
 
-# --- Pestaña 7: Laparoscopía (RCM) ---
+# --- Pestaña 6: Laparoscopía (RCM) ---
 tab_laparo = ttk.Frame(notebook)
 notebook.add(tab_laparo, text="Laparoscopía (RCM)")
 
